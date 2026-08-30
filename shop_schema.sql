@@ -1,94 +1,24 @@
-import { useEffect, useState } from 'react';
+// Cliente de Supabase para el NAVEGADOR. A diferencia de api/_lib/supabase.js
+// (que usa la Service Role Key y solo corre en las funciones /api), este usa
+// la clave "anon" pública, pensada para exponerse al cliente. Con RLS
+// activado y solo la política de lectura de route_entries abierta
+// (ver supabase/realtime_pokemon.sql), este cliente únicamente puede:
+//   - Suscribirse a cambios en tiempo real de route_entries (los Pokémon).
+// No puede leer "users" (tiene el hash de contraseña) ni escribir nada: eso
+// sigue pasando solo por /api con la Service Role Key.
+import { createClient } from '@supabase/supabase-js';
 
-const cache = new Map();
+const url = import.meta.env.VITE_SUPABASE_URL;
+const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// Cualquier nombre de Pokémon vale (no solo los de una lista fija de
-// encuentros): buscamos el sprite en la PokeAPI pública según lo que
-// escriba la persona, con un pequeño debounce y caché en memoria.
-export function usePokemonSprite(name) {
-  const [sprite, setSprite] = useState(null);
-
-  useEffect(() => {
-    const clean = String(name || '').trim().toLowerCase();
-    if (!clean) {
-      setSprite(null);
-      return undefined;
-    }
-    if (cache.has(clean)) {
-      setSprite(cache.get(clean));
-      return undefined;
-    }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(clean)}`);
-        if (!res.ok) throw new Error('not found');
-        const data = await res.json();
-        const url = (data.sprites && data.sprites.front_default) || null;
-        cache.set(clean, url);
-        if (!cancelled) setSprite(url);
-      } catch {
-        cache.set(clean, null);
-        if (!cancelled) setSprite(null);
-      }
-    }, 400);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [name]);
-
-  return sprite;
+if (!url || !anonKey) {
+  // No tiramos error para no romper el resto de la app si alguien todavía
+  // no configuró estas 2 variables: simplemente no habrá tiempo real y todo
+  // sigue funcionando como antes (con refrescos manuales).
+  console.warn(
+    '[supabaseClient] Faltan VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY: ' +
+    'los cambios de Pokémon no se verán en tiempo real hasta que las agregues.'
+  );
 }
 
-const evolutionCache = new Map();
-
-// Busca, dentro del árbol de una cadena evolutiva de la PokeAPI, el nodo
-// correspondiente a una especie concreta (comparando por nombre).
-function findSpeciesNode(chainNode, targetName) {
-  if (!chainNode) return null;
-  if (chainNode.species.name === targetName) return chainNode;
-  for (const child of chainNode.evolves_to || []) {
-    const found = findSpeciesNode(child, targetName);
-    if (found) return found;
-  }
-  return null;
-}
-
-// Dado el nombre de un Pokémon, devuelve la lista de nombres a los que
-// puede evolucionar directamente (normalmente 0 o 1, pero puede haber más
-// de una opción en evoluciones ramificadas como Eevee). Con caché en
-// memoria igual que el sprite.
-export function usePokemonEvolutions(name) {
-  const [options, setOptions] = useState([]);
-
-  useEffect(() => {
-    const clean = String(name || '').trim().toLowerCase();
-    if (!clean) {
-      setOptions([]);
-      return undefined;
-    }
-    if (evolutionCache.has(clean)) {
-      setOptions(evolutionCache.get(clean));
-      return undefined;
-    }
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const speciesRes = await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(clean)}`);
-        if (!speciesRes.ok) throw new Error('species not found');
-        const species = await speciesRes.json();
-        const chainRes = await fetch(species.evolution_chain.url);
-        if (!chainRes.ok) throw new Error('chain not found');
-        const chainData = await chainRes.json();
-        const node = findSpeciesNode(chainData.chain, clean);
-        const nextNames = node ? (node.evolves_to || []).map((n) => n.species.name) : [];
-        evolutionCache.set(clean, nextNames);
-        if (!cancelled) setOptions(nextNames);
-      } catch {
-        evolutionCache.set(clean, []);
-        if (!cancelled) setOptions([]);
-      }
-    }, 400);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [name]);
-
-  return options;
-}
+export const supabaseClient = url && anonKey ? createClient(url, anonKey) : null;
